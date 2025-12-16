@@ -1,13 +1,17 @@
-use crate::utils::validate_file;
+use crate::{
+    card::CardType,
+    editor::Editor,
+    utils::{content_to_card, validate_file_can_be_card},
+};
 
 use std::{
     fs::{self, OpenOptions},
     io::{self, Write},
-    path::{Path, PathBuf},
+    path::Path,
     time::Duration,
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use crossterm::{
     event::{
         self, Event, KeyCode, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
@@ -25,22 +29,11 @@ use ratatui::{
 };
 
 pub fn run(card_path: String) -> Result<()> {
-    let card_path = validate_file(card_path)?;
-    process_card(card_path)
-}
-
-fn process_card(card_path: PathBuf) -> Result<()> {
+    let card_path = validate_file_can_be_card(card_path)?;
     let card_exists = card_path.is_file();
-    if !card_exists {
-        if !prompt_create(&card_path)? {
-            println!("Aborting; card not created.");
-            return Ok(());
-        }
-        if let Some(parent) = card_path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            fs::create_dir_all(parent)?;
-        }
+    if !card_exists && !prompt_create(&card_path)? {
+        println!("Aborting; card not created.");
+        return Ok(());
     }
 
     capture_cards(&card_path)?;
@@ -59,7 +52,13 @@ fn prompt_create(path: &Path) -> io::Result<bool> {
     Ok(trimmed == "y" || trimmed == "yes")
 }
 
-fn append_to_card(path: &Path, contents: &str) -> io::Result<()> {
+fn append_to_card(path: &Path, contents: &str) -> Result<()> {
+    let _ = content_to_card(path, contents).context("Invalid card")?;
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)?;
+    }
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     let trimmed = contents.trim_end_matches('\n');
     if trimmed.is_empty() {
@@ -90,41 +89,50 @@ fn capture_cards(card_path: &Path) -> io::Result<()> {
     terminal.show_cursor()?;
 
     let editor_result: io::Result<()> = (|| {
-        let mut input = String::new();
+        let mut editor = Editor::new();
         let mut status: Option<String> = None;
+        let mut card_created_count = 0;
+        let mut card_last_save_attempt: Option<std::time::Instant> = None;
+        let mut view_height = 0usize;
         loop {
             terminal.draw(|frame| {
                 let area = frame.area();
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
-                    .constraints([Constraint::Min(3), Constraint::Length(4)])
+                    .constraints([Constraint::Min(3), Constraint::Length(5)])
                     .split(area);
+
+                view_height = chunks[0].height.saturating_sub(2) as usize;
+                editor.ensure_cursor_visible(view_height.max(1));
 
                 let editor_block = Block::default()
                     .title(format!(" {} ", card_path.display()).bold())
                     .borders(Borders::ALL);
-                let editor = Paragraph::new(input.as_str())
+                let editor_widget = Paragraph::new(editor.content())
                     .block(editor_block)
-                    .wrap(Wrap { trim: false });
-                frame.render_widget(editor, chunks[0]);
+                    .wrap(Wrap { trim: false })
+                    .scroll((editor.scroll_top() as u16, 0));
+                frame.render_widget(editor_widget, chunks[0]);
 
-                let mut help =
-                    String::from("Ctrl+S to save • Esc/Ctrl-C to exit • Enter for newline");
-                if let Some(message) = &status {
-                    help.push('\n');
-                    help.push_str(message);
-                }
+                let mut help = String::from(
+                    "Ctrl+B for basic card • Ctrl+K for cloze card • Ctrl+S save • Esc/Ctrl-C exit\n",
+                );
+                help.push_str(&format!("Cards created: {}", card_created_count));
+                if let Some(time) = card_last_save_attempt &&  time.elapsed().as_secs_f32() < 1.0 && status.is_some(){
+                            help.push_str(&format!(" | {}", status.clone().unwrap()));
+                        
+                    }
+
                 let instructions = Paragraph::new(help)
                     .block(Block::default().borders(Borders::ALL).title(" Help "));
                 frame.render_widget(instructions, chunks[1]);
 
-                let cursor_line = input.split('\n').count().saturating_sub(1) as u16;
-                let last_line = input.rsplit('\n').next().unwrap_or("");
-                let cursor_col = last_line.chars().count() as u16;
-
-                let cursor_x = chunks[0].x + 1 + cursor_col.min(chunks[0].width.saturating_sub(2));
+                let (cursor_row, cursor_col) = editor.cursor();
+                let visible_row = cursor_row.saturating_sub(editor.scroll_top());
+                let cursor_x =
+                    chunks[0].x + 1 + (cursor_col as u16).min(chunks[0].width.saturating_sub(2));
                 let cursor_y =
-                    chunks[0].y + 1 + cursor_line.min(chunks[0].height.saturating_sub(2));
+                    chunks[0].y + 1 + (visible_row as u16).min(chunks[0].height.saturating_sub(2));
                 frame.set_cursor_position((cursor_x, cursor_y));
             })?;
 
@@ -140,26 +148,58 @@ fn capture_cards(card_path: &Path) -> io::Result<()> {
                 {
                     break;
                 }
+                if key.code == KeyCode::Char('b') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    editor.card_type = CardType::Basic;
+                    editor.clear();
+                    continue;
+                }
+                if key.code == KeyCode::Char('k') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    editor.card_type = CardType::Cloze;
+                    editor.clear();
+                    continue;
+                }
 
                 if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
-                    if input.trim().is_empty() {
-                        status = Some(String::from("Card not saved (empty)."));
-                    } else {
-                        append_to_card(card_path, &input)?;
-                        status = Some(String::from("Card saved."));
+                    let contents = editor.content();
+                    let save_status = append_to_card(card_path, &contents);
+                    match save_status {
+                        Ok(_) => {
+                            editor.clear();
+                            card_created_count += 1;
+                            card_last_save_attempt = Some(std::time::Instant::now());
+                            status = Some(String::from("Card saved."))
+                        }
+                        Err(e) => {
+                            card_last_save_attempt = Some(std::time::Instant::now());
+                            status = Some(format!("Unable to save card: {}", e));
+                        }
                     }
-                    input.clear();
                     continue;
                 }
 
                 match key.code {
                     KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        input.push(c);
+                        editor.insert_char(c);
                     }
-                    KeyCode::Enter => input.push('\n'),
-                    KeyCode::Tab => input.push('\t'),
-                    KeyCode::Backspace => {
-                        input.pop();
+                    KeyCode::Enter => editor.insert_newline(),
+                    KeyCode::Tab => editor.insert_tab(),
+                    KeyCode::Backspace => editor.backspace(),
+                    KeyCode::Delete => editor.delete(),
+                    KeyCode::Left => editor.move_left(),
+                    KeyCode::Right => editor.move_right(),
+                    KeyCode::Up => editor.move_up(),
+                    KeyCode::Down => editor.move_down(),
+                    KeyCode::Home => editor.move_home(),
+                    KeyCode::End => editor.move_end(),
+                    KeyCode::PageUp => {
+                        for _ in 0..view_height.max(1) {
+                            editor.move_up();
+                        }
+                    }
+                    KeyCode::PageDown => {
+                        for _ in 0..view_height.max(1) {
+                            editor.move_down();
+                        }
                     }
                     _ => {}
                 }

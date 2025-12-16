@@ -1,6 +1,13 @@
 use clap::Parser;
 
+use anyhow::anyhow;
+
+use self::crud::DB;
+
+mod card;
 mod create;
+mod crud;
+mod editor;
 pub(crate) mod utils;
 
 #[derive(Parser, Debug)]
@@ -24,8 +31,12 @@ enum Args {
     },
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let args = Args::parse();
+    let db = DB::new()
+        .await
+        .expect("Failed to connect to or initialize database");
     match args {
         Args::Drill { .. } => todo!(),
         Args::Create { card_path } => {
