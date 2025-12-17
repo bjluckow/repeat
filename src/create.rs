@@ -12,7 +12,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use crossterm::{
     event::{
         self, Event, KeyCode, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
@@ -59,6 +59,10 @@ async fn create_card_append_file(db: &DB, path: &Path, contents: &str) -> Result
     let end_idx = start_idx + contents.len();
 
     let card = content_to_card(path, contents, start_idx, end_idx).context("Invalid card")?;
+    let card_exists = db.card_exists(&card).await?;
+    if card_exists {
+        return Err(anyhow!("This card already exists in the database."));
+    }
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {

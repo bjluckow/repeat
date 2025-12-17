@@ -13,6 +13,10 @@ use std::str::FromStr;
 use anyhow::anyhow;
 
 use crate::card::Card;
+use crate::fsrs::Performance;
+use crate::fsrs::ReviewStatus;
+use crate::fsrs::ReviewedPerformance;
+use crate::fsrs::update_performance;
 
 pub struct DB {
     pool: SqlitePool,
@@ -44,14 +48,11 @@ impl DB {
     }
 
     pub async fn add_card(&self, card: &Card) -> Result<()> {
-        if self.card_exists(card).await? {
-            return Ok(());
-        }
         let now = chrono::Utc::now().to_rfc3339();
 
         sqlx::query(
             r#"
-        INSERT INTO cards (
+        INSERT or ignore INTO cards (
             card_hash,
             added_at,
             last_reviewed_at,
@@ -79,13 +80,9 @@ impl DB {
         let now = chrono::Utc::now().to_rfc3339();
 
         for card in cards {
-            if self.card_exists(card).await? {
-                continue;
-            }
-
             sqlx::query(
                 r#"
-            INSERT INTO cards (
+            INSERT or ignore INTO cards (
                 card_hash,
                 added_at,
                 last_reviewed_at,
@@ -118,17 +115,83 @@ impl DB {
         Ok(count > 0)
     }
 
+    pub async fn update_card_performance(
+        &self,
+        card: &Card,
+        review_status: ReviewStatus,
+    ) -> Result<bool> {
+        let current_performance = self.get_card_performance(card).await?;
+        let now = chrono::Utc::now();
+        let new_performance = update_performance(current_performance, review_status, now);
+        let card_hash = card.card_hash.clone();
+
+        let result = sqlx::query(
+            r#"
+            UPDATE cards
+            SET
+                last_reviewed_at = ?,
+                stability = ?,
+                difficulty = ?,
+                interval_raw = ?,
+                interval_days = ?,
+                due_date = ?,
+                review_count = ?
+            WHERE card_hash = ?
+            "#,
+        )
+        .bind(new_performance.last_reviewed_at)
+        .bind(new_performance.stability)
+        .bind(new_performance.difficulty)
+        .bind(new_performance.interval_raw)
+        .bind(new_performance.interval_days as i64)
+        .bind(new_performance.due_date)
+        .bind(new_performance.review_count as i64)
+        .bind(card_hash)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn get_card_performance(&self, card: &Card) -> Result<Performance> {
+        let card_hash = card.card_hash.clone();
+        let sql = "SELECT added_at, last_reviewed_at, stability, difficulty, interval_raw, interval_days, due_date, review_count 
+           FROM cards
+           WHERE card_hash = ?;";
+
+        let row = sqlx::query(sql)
+            .bind(card_hash)
+            .fetch_one(&self.pool)
+            .await?;
+
+        let review_count: i64 = row.get("review_count");
+        if review_count == 0 {
+            return Ok(Performance::default());
+        }
+        let reviewed = ReviewedPerformance {
+            last_reviewed_at: row.get("last_reviewed_at"),
+            stability: row.get("stability"),
+            difficulty: row.get("difficulty"),
+            interval_raw: row.get("interval_raw"),
+            interval_days: row.get::<i64, _>("interval_days") as usize,
+            due_date: row.get("due_date"),
+            review_count: review_count as usize,
+        };
+
+        Ok(Performance::Reviewed(reviewed))
+    }
+
     pub async fn due_today(
         &self,
         card_hashes: HashMap<String, Card>,
         card_limit: Option<usize>,
     ) -> Result<Vec<Card>> {
-        let today = chrono::Local::now().date_naive();
+        let now = chrono::Utc::now().to_rfc3339();
 
         let sql = "SELECT card_hash 
            FROM cards
            WHERE due_date <= ? OR due_date IS NULL;";
-        let mut rows = sqlx::query(sql).bind(today).fetch(&self.pool);
+        let mut rows = sqlx::query(sql).bind(now).fetch(&self.pool);
         let mut cards = Vec::new();
         while let Some(row) = rows.try_next().await? {
             let card_hash: String = row.get("card_hash");
@@ -140,10 +203,10 @@ impl DB {
                 cards.push(card.clone());
             }
 
-            if let Some(card_limit) = card_limit {
-                if cards.len() >= card_limit {
-                    break;
-                }
+            if let Some(card_limit) = card_limit
+                && cards.len() >= card_limit
+            {
+                break;
             }
         }
 

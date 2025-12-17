@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use crate::card::{Card, CardContent};
 use crate::crud::DB;
+use crate::fsrs::ReviewStatus;
 use crate::utils::{cards_from_dir, cards_from_md};
 
 use anyhow::{Context, Result};
@@ -48,7 +49,7 @@ pub async fn run(
         return Ok(());
     }
 
-    start_drill_session(cards_due_today)?;
+    start_drill_session(db, cards_due_today).await?;
 
     let _ = new_card_limit;
     Ok(())
@@ -75,16 +76,18 @@ pub async fn register_all_cards(db: &DB, paths: Vec<String>) -> Result<Vec<Card>
     Ok(all_cards)
 }
 
-struct DrillState {
+struct DrillState<'a> {
+    db: &'a DB,
     cards: Vec<Card>,
     current_idx: usize,
     show_answer: bool,
-    last_action: Option<ReviewAction>,
+    last_action: Option<ReviewStatus>,
 }
 
-impl DrillState {
-    fn new(cards: Vec<Card>) -> Self {
+impl<'a> DrillState<'a> {
+    fn new(db: &'a DB, cards: Vec<Card>) -> Self {
         Self {
+            db,
             cards,
             current_idx: 0,
             show_answer: false,
@@ -100,10 +103,18 @@ impl DrillState {
         self.show_answer = true;
     }
 
-    fn handle_review(&mut self, action: ReviewAction) {
+    async fn handle_review(&mut self, action: ReviewStatus) -> Result<()> {
+        let current_card = self
+            .current_card()
+            .expect("card should exist when handling review");
+        self.db
+            .update_card_performance(current_card, action)
+            .await?;
+
         self.last_action = Some(action);
         self.current_idx += 1;
         self.show_answer = false;
+        Ok(())
     }
 
     fn is_complete(&self) -> bool {
@@ -111,22 +122,7 @@ impl DrillState {
     }
 }
 
-#[derive(Copy, Clone)]
-enum ReviewAction {
-    Pass,
-    Fail,
-}
-
-impl ReviewAction {
-    fn label(&self) -> &'static str {
-        match self {
-            ReviewAction::Pass => "Pass",
-            ReviewAction::Fail => "Fail",
-        }
-    }
-}
-
-fn start_drill_session(cards: Vec<Card>) -> Result<()> {
+async fn start_drill_session(db: &DB, cards: Vec<Card>) -> Result<()> {
     enable_raw_mode().context("failed to enable raw mode")?;
     let mut stdout = io::stdout();
     execute!(
@@ -142,9 +138,9 @@ fn start_drill_session(cards: Vec<Card>) -> Result<()> {
     let mut terminal = Terminal::new(backend).context("failed to start terminal")?;
     terminal.hide_cursor().context("failed to hide cursor")?;
 
-    let mut state = DrillState::new(cards);
+    let mut state = DrillState::new(db, cards);
 
-    let loop_result: Result<()> = (|| {
+    let loop_result: Result<()> = async {
         loop {
             if state.is_complete() {
                 break Ok(());
@@ -202,16 +198,17 @@ fn start_drill_session(cards: Vec<Card>) -> Result<()> {
                         }
                     }
                     KeyCode::Char('1') if state.show_answer => {
-                        state.handle_review(ReviewAction::Fail);
+                        state.handle_review(ReviewStatus::Fail).await?;
                     }
                     KeyCode::Char('2') if state.show_answer => {
-                        state.handle_review(ReviewAction::Pass);
+                        state.handle_review(ReviewStatus::Pass).await?;
                     }
                     _ => {}
                 }
             }
         }
-    })();
+    }
+    .await;
 
     disable_raw_mode().context("failed to disable raw mode")?;
     execute!(
@@ -225,7 +222,7 @@ fn start_drill_session(cards: Vec<Card>) -> Result<()> {
     loop_result
 }
 
-fn instructions_text(state: &DrillState) -> String {
+fn instructions_text(state: &DrillState<'_>) -> String {
     let mut text = if state.show_answer {
         "Fail: 1 • Pass: 2 • Quit: Q/Esc".to_string()
     } else {

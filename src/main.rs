@@ -7,6 +7,7 @@ mod create;
 mod crud;
 mod drill;
 mod editor;
+mod fsrs;
 pub(crate) mod utils;
 
 #[derive(Parser, Debug)]

@@ -14,27 +14,3 @@ create table cards (
 
 CREATE INDEX IF NOT EXISTS idx_cards_due_date ON cards(due_date);
 
-create table sessions (
-    session_id integer primary key,
-    started_at text not null,
-    ended_at text not null
-) strict;
-
-create table reviews (
-    review_id integer primary key,
-    session_id integer not null
-        references sessions (session_id)
-        on update cascade
-        on delete cascade,
-    card_hash text not null
-        references cards (card_hash)
-        on update cascade
-        on delete cascade,
-    reviewed_at text not null,
-    grade text not null,
-    stability real not null,
-    difficulty real not null,
-    interval_raw real not null,
-    interval_days integer not null,
-    due_date text not null
-) strict;
