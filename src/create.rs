@@ -150,7 +150,7 @@ async fn capture_cards(db: &DB, card_path: &Path) -> io::Result<()> {
                 frame.set_cursor_position((cursor_x, cursor_y));
             })?;
 
-            if event::poll(Duration::from_millis(250))?
+            if event::poll(Duration::from_millis(16))?
                 && let Event::Key(key) = event::read()?
             {
                 if key.kind != KeyEventKind::Press {

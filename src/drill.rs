@@ -177,7 +177,7 @@ async fn start_drill_session(db: &DB, cards: Vec<Card>) -> Result<()> {
                 })
                 .context("failed to render frame")?;
 
-            if event::poll(Duration::from_millis(250))?
+            if event::poll(Duration::from_millis(16))?
                 && let Event::Key(key) = event::read()?
             {
                 if key.kind != KeyEventKind::Press {
