@@ -10,5 +10,8 @@ delete_db:
 create:
     cargo run -- create test.md
 
+check:
+    cargo run -- check
+
 drill:
     cargo run -- drill

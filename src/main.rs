@@ -3,6 +3,7 @@ use clap::Parser;
 use self::crud::DB;
 
 mod card;
+mod check;
 mod create;
 mod crud;
 mod drill;
@@ -26,6 +27,10 @@ enum Args {
         #[arg(long)]
         new_card_limit: Option<usize>,
     },
+    Check {
+        #[arg(value_name = "PATHS", num_args = 0.., default_value = ".")]
+        paths: Vec<String>,
+    },
     /// Create or append to a card
     Create {
         /// Card path
@@ -46,6 +51,11 @@ async fn main() {
             new_card_limit,
         } => {
             if let Err(error) = drill::run(&db, paths, card_limit, new_card_limit).await {
+                eprintln!("error: {error}")
+            }
+        }
+        Args::Check { paths } => {
+            if let Err(error) = check::run(&db, paths).await {
                 eprintln!("error: {error}")
             }
         }

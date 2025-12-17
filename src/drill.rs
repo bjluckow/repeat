@@ -32,16 +32,7 @@ pub async fn run(
     card_limit: Option<usize>,
     new_card_limit: Option<usize>,
 ) -> Result<()> {
-    let cards = register_all_cards(db, paths).await?;
-
-    let hash_cards: HashMap<String, Card> = cards
-        .into_iter()
-        .map(|c| {
-            let hash = c.card_hash.clone();
-            (hash, c)
-        })
-        .collect();
-
+    let hash_cards = register_all_cards(db, paths).await?;
     let cards_due_today = db.due_today(hash_cards, card_limit).await?;
 
     if cards_due_today.is_empty() {
@@ -55,7 +46,7 @@ pub async fn run(
     Ok(())
 }
 
-pub async fn register_all_cards(db: &DB, paths: Vec<String>) -> Result<Vec<Card>> {
+pub async fn register_all_cards(db: &DB, paths: Vec<String>) -> Result<HashMap<String, Card>> {
     let mut all_cards = Vec::new();
 
     for path in paths {
@@ -73,7 +64,15 @@ pub async fn register_all_cards(db: &DB, paths: Vec<String>) -> Result<Vec<Card>
     }
     db.add_cards_batch(&all_cards).await?;
 
-    Ok(all_cards)
+    let hash_cards: HashMap<String, Card> = all_cards
+        .into_iter()
+        .map(|c| {
+            let hash = c.card_hash.clone();
+            (hash, c)
+        })
+        .collect();
+
+    Ok(hash_cards)
 }
 
 struct DrillState<'a> {
