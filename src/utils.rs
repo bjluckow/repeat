@@ -58,25 +58,69 @@ pub fn trim_line(line: &str) -> Option<String> {
     Some(trimmed_line)
 }
 fn parse_card_lines(contents: &str) -> (Option<String>, Option<String>, Option<String>) {
-    let mut question = None;
-    let mut answer = None;
-    let mut cloze = None;
+    let mut question_lines = Vec::new();
+    let mut answer_lines = Vec::new();
+    let mut cloze_lines = Vec::new();
+
+    enum Section {
+        Question,
+        Answer,
+        Cloze,
+        None,
+    }
+
+    let mut section = Section::None;
 
     for raw_line in contents.lines() {
         let line = match trim_line(raw_line) {
             Some(line) => line,
             None => continue,
         };
+
         if let Some(rest) = line.strip_prefix("Q:") {
-            question = trim_line(rest);
+            section = Section::Question;
+            question_lines.clear();
+            if let Some(q) = trim_line(rest) {
+                question_lines.push(q)
+            }
+            continue;
         } else if let Some(rest) = line.strip_prefix("A:") {
-            answer = trim_line(rest);
+            section = Section::Answer;
+            answer_lines.clear();
+            if let Some(q) = trim_line(rest) {
+                answer_lines.push(q)
+            }
+            continue;
         } else if let Some(rest) = line.strip_prefix("C:") {
-            cloze = trim_line(rest);
+            section = Section::Cloze;
+            cloze_lines.clear();
+            if let Some(q) = trim_line(rest) {
+                cloze_lines.push(q)
+            }
+            continue;
+        }
+
+        match section {
+            Section::Question => question_lines.push(line.to_string()),
+            Section::Answer => answer_lines.push(line.to_string()),
+            Section::Cloze => cloze_lines.push(line.to_string()),
+            Section::None => {}
         }
     }
 
-    (question, answer, cloze)
+    let join_nonempty = |v: Vec<String>| {
+        if v.is_empty() {
+            None
+        } else {
+            Some(v.join("\n"))
+        }
+    };
+
+    (
+        join_nonempty(question_lines),
+        join_nonempty(answer_lines),
+        join_nonempty(cloze_lines),
+    )
 }
 pub fn content_to_card(
     card_path: &Path,
@@ -196,12 +240,23 @@ pub fn cards_from_dir(path: &Path) -> Result<Vec<Card>> {
 
 #[cfg(test)]
 mod tests {
-    use crate::utils::{cards_from_dir, content_to_card};
+    use crate::utils::{cards_from_dir, content_to_card, parse_card_lines};
     use std::path::PathBuf;
 
     use crate::card::CardContent;
 
     use super::cards_from_md;
+
+    #[test]
+    fn test_card_parsing() {
+        let contents = "C:\nRegion: [`us-east-2`]\n\nLocation: [Ohio]\n\n---\n\n";
+        let (question, _, cloze) = parse_card_lines(contents);
+        assert!(question.is_none());
+        assert_eq!(
+            "Region: [`us-east-2`]\nLocation: [Ohio]\n---",
+            cloze.unwrap()
+        );
+    }
 
     #[test]
     fn basic_qa() {
