@@ -6,6 +6,7 @@ use std::time::Duration;
 use crate::card::{Card, CardContent};
 use crate::crud::DB;
 use crate::fsrs::ReviewStatus;
+use crate::theme::Theme;
 use crate::utils::{cards_from_dir, cards_from_md};
 
 use anyhow::{Context, Result};
@@ -22,8 +23,8 @@ use ratatui::{
     Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
-    style::Stylize,
-    widgets::{Block, Borders, Paragraph, Wrap},
+    text::{Line, Span},
+    widgets::{Paragraph, Wrap},
 };
 
 pub async fn run(
@@ -162,29 +163,35 @@ async fn start_drill_session(db: &DB, cards: Vec<Card>) -> Result<()> {
                         .current_card()
                         .expect("card should exist while session is active");
                     let area = frame.area();
+                    frame.render_widget(Theme::backdrop(), area);
                     let chunks = Layout::default()
                         .direction(Direction::Vertical)
-                        .constraints([Constraint::Min(5), Constraint::Length(3)])
+                        .constraints([Constraint::Min(5), Constraint::Length(5)])
                         .split(area);
 
-                    let header = format!(
-                        " Card {}/{} • {} to redo • {} ",
-                        state.current_idx + 1,
-                        state.cards.len(),
-                        state.redo_cards.len(),
-                        card.file_path.display()
-                    )
-                    .bold();
+                    let header_line = Line::from(vec![
+                        Theme::label_span(format!(
+                            "Card {}/{}",
+                            state.current_idx + 1,
+                            state.cards.len()
+                        )),
+                        Theme::bullet(),
+                        Span::styled(format!("{} redo", state.redo_cards.len()), Theme::muted()),
+                        Theme::bullet(),
+                        Span::styled(card.file_path.display().to_string(), Theme::muted()),
+                    ]);
 
                     let content = format_card_text(&card, state.show_answer);
                     let card_widget = Paragraph::new(content)
-                        .block(Block::default().title(header).borders(Borders::ALL))
+                        .style(Theme::body())
+                        .block(Theme::panel_with_line(header_line))
                         .wrap(Wrap { trim: false });
                     frame.render_widget(card_widget, chunks[0]);
 
                     let instructions = instructions_text(&state);
                     let footer = Paragraph::new(instructions)
-                        .block(Block::default().title(" Controls ").borders(Borders::ALL));
+                        .style(Theme::body())
+                        .block(Theme::panel_with_line(Theme::section_header("Controls")));
                     frame.render_widget(footer, chunks[1]);
                 })
                 .context("failed to render frame")?;
@@ -233,18 +240,43 @@ async fn start_drill_session(db: &DB, cards: Vec<Card>) -> Result<()> {
     loop_result
 }
 
-fn instructions_text(state: &DrillState<'_>) -> String {
-    let mut text = if state.show_answer {
-        "Fail: 1 • Pass: 2 • Quit: Q/Esc".to_string()
+fn instructions_text(state: &DrillState<'_>) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    if state.show_answer {
+        lines.push(Line::from(vec![
+            Theme::key_chip("1"),
+            Span::styled(" Fail", Theme::danger()),
+            Theme::bullet(),
+            Theme::key_chip("2"),
+            Span::styled(" Pass", Theme::success()),
+            Theme::bullet(),
+            Theme::key_chip("Esc"),
+            Span::styled(" / Ctrl+C exit", Theme::muted()),
+        ]));
     } else {
-        "Show answer: Space/Enter • Esc/Ctrl-C exit".to_string()
-    };
-
-    if let Some(action) = state.last_action {
-        text.push_str(&format!(" | Last: {}", action.label()));
+        lines.push(Line::from(vec![
+            Theme::key_chip("Space"),
+            Span::styled(" or ", Theme::muted()),
+            Theme::key_chip("Enter"),
+            Span::styled(" show answer", Theme::muted()),
+            Theme::bullet(),
+            Theme::key_chip("Esc"),
+            Span::styled(" / Ctrl+C exit", Theme::muted()),
+        ]));
     }
 
-    text
+    if let Some(action) = state.last_action {
+        let style = match action {
+            ReviewStatus::Pass => Theme::success(),
+            ReviewStatus::Fail => Theme::danger(),
+        };
+        lines.push(Line::from(vec![
+            Theme::muted_span("Last:"),
+            Span::styled(format!(" {}", action.label()), style),
+        ]));
+    }
+
+    lines
 }
 
 fn format_card_text(card: &Card, show_answer: bool) -> String {

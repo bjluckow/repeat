@@ -2,6 +2,7 @@ use crate::{
     card::CardType,
     crud::DB,
     editor::Editor,
+    theme::Theme,
     utils::{cards_from_md, content_to_card, validate_file_can_be_card},
 };
 
@@ -26,8 +27,8 @@ use ratatui::{
     Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
-    style::Stylize,
-    widgets::{Block, Borders, Paragraph, Wrap},
+    text::{Line, Span},
+    widgets::{Paragraph, Wrap},
 };
 
 pub async fn run(db: &DB, card_path: String) -> Result<()> {
@@ -100,10 +101,7 @@ async fn capture_cards(db: &DB, card_path: &Path) -> io::Result<()> {
         let mut editor = Editor::new();
         let mut status: Option<String> = None;
         let existing_cards = cards_from_md(card_path).unwrap_or_default();
-        let unique_hashes: HashSet<_> = existing_cards
-            .into_iter()
-            .map(|c| c.card_hash)
-            .collect();
+        let unique_hashes: HashSet<_> = existing_cards.into_iter().map(|c| c.card_hash).collect();
 
         let mut num_cards_in_collection = unique_hashes.len();
         let mut card_created_count = 0;
@@ -112,33 +110,60 @@ async fn capture_cards(db: &DB, card_path: &Path) -> io::Result<()> {
         loop {
             terminal.draw(|frame| {
                 let area = frame.area();
+                frame.render_widget(Theme::backdrop(), area);
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
-                    .constraints([Constraint::Min(3), Constraint::Length(4)])
+                    .constraints([Constraint::Min(5), Constraint::Length(5)])
                     .split(area);
 
                 view_height = chunks[0].height.saturating_sub(2) as usize;
                 editor.ensure_cursor_visible(view_height.max(1));
 
-                let editor_block = Block::default()
-                    .title(format!(" {} ", card_path.display()).bold())
-                    .borders(Borders::ALL);
+                let editor_block = Theme::panel(card_path.display().to_string());
                 let editor_widget = Paragraph::new(editor.content())
+                    .style(Theme::body())
                     .block(editor_block)
                     .wrap(Wrap { trim: false })
                     .scroll((editor.scroll_top() as u16, 0));
                 frame.render_widget(editor_widget, chunks[0]);
 
-                let mut help = String::from(
-                    "Ctrl+B for basic card • Ctrl+K for cloze card • Ctrl+S save • Esc/Ctrl-C exit\n",
-                );
-                help.push_str(&format!("Cards in collection: {} • Cards created: {}", num_cards_in_collection, card_created_count));
-                if let Some(time) = card_last_save_attempt &&  time.elapsed().as_secs_f32() < 1.0 && status.is_some(){
-                            help.push_str(&format!(" | {}", status.clone().unwrap()));
-                    }
+                let mut help_lines = vec![Line::from(vec![
+                    Theme::key_chip("Ctrl+B"),
+                    Span::styled(" basic", Theme::muted()),
+                    Theme::bullet(),
+                    Theme::key_chip("Ctrl+K"),
+                    Span::styled(" cloze", Theme::muted()),
+                    Theme::bullet(),
+                    Theme::key_chip("Ctrl+S"),
+                    Span::styled(" save", Theme::muted()),
+                    Theme::bullet(),
+                    Theme::key_chip("Esc"),
+                    Span::styled(" / Ctrl+C exit", Theme::muted()),
+                ])];
+                help_lines.push(Line::from(vec![
+                    Span::styled("Cards in collection:", Theme::muted()),
+                    Theme::label_span(format!(" {}", num_cards_in_collection)),
+                    Theme::bullet(),
+                    Span::styled("Created this session:", Theme::muted()),
+                    Theme::label_span(format!(" {}", card_created_count)),
+                ]));
+                if let Some(time) = card_last_save_attempt
+                    && time.elapsed().as_secs_f32() < 1.0
+                    && status.is_some()
+                {
+                    let message = status.clone().unwrap();
+                    let style = if message.starts_with("Unable") {
+                        Theme::danger()
+                    } else {
+                        Theme::success()
+                    };
+                    help_lines.push(Line::from(vec![Span::styled(message, style)]));
+                }
 
-                let instructions = Paragraph::new(help)
-                    .block(Block::default().borders(Borders::ALL).title(" Help "));
+                let instructions = Paragraph::new(help_lines)
+                    .style(Theme::body())
+                    .block(Theme::panel_with_line(Theme::section_header("Help")))
+                    .wrap(Wrap { trim: true });
                 frame.render_widget(instructions, chunks[1]);
 
                 let (cursor_row, cursor_col) = editor.cursor();
@@ -186,10 +211,11 @@ async fn capture_cards(db: &DB, card_path: &Path) -> io::Result<()> {
                         }
                         Err(e) => {
                             card_last_save_attempt = Some(std::time::Instant::now());
-                            let flat_error = e.chain()
-                                    .map(|cause| cause.to_string().replace('\n', " "))
-                                    .collect::<Vec<_>>()
-                                    .join(": ");
+                            let flat_error = e
+                                .chain()
+                                .map(|cause| cause.to_string().replace('\n', " "))
+                                .collect::<Vec<_>>()
+                                .join(": ");
                             status = Some(format!("Unable to save card: {}", flat_error));
                         }
                     }
